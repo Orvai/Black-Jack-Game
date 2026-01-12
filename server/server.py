@@ -40,6 +40,7 @@ def handle_client(conn: socket.socket, addr):
         rounds, client_name = unpack_request(data)
         print(f"[TCP] Client {addr} -> name='{client_name}', rounds={rounds}")
         blackjack.play_game(conn, rounds)
+        conn.close()
         print(f"[TCP] Finished game with {client_name}")
     except Exception as e:
         print(f"[TCP] Error from {addr}: {e}")

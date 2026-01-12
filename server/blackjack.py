@@ -49,6 +49,7 @@ def hand_value(hand):
 def play_game(conn: socket.socket, rounds: int):
     for _ in range(rounds):
         play_round(conn)
+    return
 
 
 def play_round(conn: socket.socket):
@@ -67,10 +68,10 @@ def play_round(conn: socket.socket):
     # =========================
     while True:
         player_score = hand_value(player_hand)
-        if player_score > 21:
-            last_card = player_hand[-1] 
-            send_result(conn, RESULT_LOSS, last_card)
-            return
+        # if player_score > 21:
+        #     last_card = player_hand[-1] 
+        #     send_result(conn, RESULT_LOSS, last_card)
+        #     return
 
         data = conn.recv(1024)
         if not data:
@@ -81,7 +82,13 @@ def play_round(conn: socket.socket):
         if decision == "Hit":
             card = deck.pop()
             player_hand.append(card)
-            send_update(conn, card)
+            print(hand_value(player_hand))
+            if hand_value(player_hand) > 21:
+                send_result(conn, RESULT_LOSS, card)
+                return
+            else:
+                send_update(conn, card)
+
 
         elif decision == "Stand":
             break

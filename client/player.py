@@ -63,24 +63,20 @@ def play_game(conn, total_rounds):
             return
 
         my_turn = True
+        result = None
         while my_turn:
             choice = input("Your move: [H]it or [S]tand? ").strip().lower()
             
             if choice == 'h':
-                print("[DEBUG] 1. Preparing packet...")
                 packet = protocol.pack_payload("Hit", 0, 0, 0)
-                print(f"[DEBUG] 2. Packet ready ({len(packet)} bytes). Sending...")
                 try:
-                    print("[DEBUG] 1. s")
                     conn.sendall(packet)
-                    print(f"[DEBUG] 2. P ({len(packet)} bytes). Sending...")
                     
                     data = recv_all(conn, PAYLOAD_SIZE)
                     if not data: return
                     _, result, rank, suit = protocol.unpack_payload(data)
                     
                     print(f"You drew: {get_card_str(rank, suit)}")
-                    
                     if result != protocol.RESULT_NOT_OVER:
                          my_turn = False 
 
@@ -90,7 +86,6 @@ def play_game(conn, total_rounds):
                 
             elif choice == 's':
                 try:
-                    print("[DEBUG] Processing STAND")
                     conn.sendall(protocol.pack_payload("Stand", 0, 0, 0))
                     my_turn = False
                 except Exception as e:
@@ -103,12 +98,14 @@ def play_game(conn, total_rounds):
         round_over = False
         while not round_over:
             try:
-                data = recv_all(conn, PAYLOAD_SIZE)
-                if not data: return
-                _, result, rank, suit = protocol.unpack_payload(data)
-                
+                if(result == None):
+                    data = recv_all(conn, PAYLOAD_SIZE)
+                    if not data: return
+                    _, result, rank, suit = protocol.unpack_payload(data)
+                    
                 if result == protocol.RESULT_NOT_OVER:
                     print(f"Dealer drew: {get_card_str(rank, suit)}")
+                    result = None
                 else:
                     if rank != 0: 
                         print(f"Final card involved: {get_card_str(rank, suit)}")
