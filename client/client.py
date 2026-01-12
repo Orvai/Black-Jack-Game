@@ -1,0 +1,69 @@
+import socket
+import struct
+import sys
+import common.protocol as protocol 
+from . import player
+
+# =========================
+# Configuration
+# =========================
+UDP_PORT = 13122
+CLIENT_TEAM_NAME = "Team Israel" 
+
+def main():
+    try:
+        rounds_str = input("Enter number of rounds to play: ")
+        num_rounds = int(rounds_str)
+    except ValueError:
+        print("Invalid input. Using default: 3 rounds.")
+        num_rounds = 3
+
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    try:
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+    udp_sock.bind(('', UDP_PORT))
+    
+    print(f"Client started, listening for offer requests (will play {num_rounds} rounds)...")
+
+    while True:
+        try:
+            data, addr = udp_sock.recvfrom(1024)
+            server_ip = addr[0]
+
+            try:
+                server_port, server_name = protocol.unpack_offer(data)
+                print(f"Received offer from {server_name} at {server_ip}")
+            except Exception as e:
+                print(f"Invalid offer received: {e}")
+                continue
+
+            tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                tcp_sock.connect((server_ip, server_port))
+            except Exception as e:
+                print(f"Failed to connect to server: {e}")
+                continue
+
+            try:
+                req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME)
+                tcp_sock.sendall(req_packet)
+                
+                player.play_game(tcp_sock, num_rounds)
+
+            except Exception as e:
+                print(f"Game session error: {e}")
+            finally:
+                print("Disconnecting from server...")
+                tcp_sock.close()
+                print("Client started, listening for offer requests...")
+
+        except KeyboardInterrupt:
+            print("\nExiting client.")
+            break
+
+if __name__ == "__main__":
+    main()
