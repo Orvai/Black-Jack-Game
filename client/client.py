@@ -61,7 +61,7 @@ def main():
             tcp_sock.settimeout(TCP_RESPONSE_TIMEOUT)
 
             try:
-                req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME)
+                req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME) + b"\n"                
                 tcp_sock.sendall(req_packet)
                 
                 player.play_game(tcp_sock, num_rounds)

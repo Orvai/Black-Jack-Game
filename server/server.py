@@ -68,11 +68,13 @@ def handle_client(conn: socket.socket, addr):
     try:
         # 1) Timeout only for receiving the initial request
         conn.settimeout(REQUEST_TIMEOUT)
-        data = recv_exact(conn, 38)
+        data = recv_exact(conn, 39)
         if not data:
             print(f"[TCP] No request received from {addr} (timeout/disconnect).")
             return
-
+        data = data.rstrip(b"\n")
+        if len(data) > 38:
+            data = data[:38]
         rounds, client_name = unpack_request(data)
         print(f"[TCP] Client {addr} -> name='{client_name}', rounds={rounds}")
 
