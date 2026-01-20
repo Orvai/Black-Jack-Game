@@ -1,13 +1,17 @@
 import random
 import socket
+import struct
 
 from common.protocol import (
     pack_payload,
-    unpack_payload,
     RESULT_WIN,
     RESULT_LOSS,
     RESULT_TIE,
     RESULT_NOT_OVER,
+    DECISION_HIT,
+    DECISION_STAND,
+    MAGIC_COOKIE,
+    MSG_TYPE_PAYLOAD,
 )
 
 # =========================
@@ -25,6 +29,7 @@ def create_deck():
 
 
 def card_value(rank: int) -> int:
+    # Ace is ALWAYS 11 (per assignment spec)
     if rank == 1:
         return 11
     if rank >= 10:
@@ -33,13 +38,7 @@ def card_value(rank: int) -> int:
 
 
 def hand_value(hand):
-    value = sum(card_value(r) for r, _ in hand)
-    aces = sum(1 for r, _ in hand if r == 1)
-    while value > 21 and aces:
-        value -= 10
-        aces -= 1
-
-    return value
+    return sum(card_value(rank) for rank, _ in hand)
 
 
 # =========================
@@ -48,8 +47,39 @@ def hand_value(hand):
 
 def play_game(conn: socket.socket, rounds: int):
     for _ in range(rounds):
-        play_round(conn)
-    return
+        ok = play_round(conn)
+        if not ok:
+            return
+
+
+def recv_exact(conn: socket.socket, size: int):
+    data = b""
+    while len(data) < size:
+        try:
+            chunk = conn.recv(size - len(data))
+        except socket.timeout:
+            return None
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+
+def read_client_decision(data: bytes):
+    """
+    Client -> Server payload parsing:
+    We ONLY care about the Decision field (5 bytes).
+    The rest of the payload is ignored by design.
+    """
+    if len(data) < 14:
+        return None
+
+    cookie, msg_type = struct.unpack("!IB", data[:5])
+    if cookie != MAGIC_COOKIE or msg_type != MSG_TYPE_PAYLOAD:
+        return None
+
+    decision = data[5:10].decode("ascii")
+    return decision
 
 
 def play_round(conn: socket.socket):
@@ -58,7 +88,7 @@ def play_round(conn: socket.socket):
     player_hand = [deck.pop(), deck.pop()]
     dealer_hand = [deck.pop(), deck.pop()]
 
-    
+    # Initial deal
     send_update(conn, player_hand[0])
     send_update(conn, player_hand[1])
     send_update(conn, dealer_hand[0])
@@ -66,42 +96,44 @@ def play_round(conn: socket.socket):
     # =========================
     # Player turn
     # =========================
+    player_busted = False
+
     while True:
-        player_score = hand_value(player_hand)
-        # if player_score > 21:
-        #     last_card = player_hand[-1] 
-        #     send_result(conn, RESULT_LOSS, last_card)
-        #     return
-
-        data = conn.recv(1024)
+        data = recv_exact(conn, 14)
         if not data:
-            return 
+            return False
 
-        decision, _, _, _ = unpack_payload(data)
+        decision = read_client_decision(data)
+        if decision is None:
+            continue
 
-        if decision == "Hit":
+        if decision == DECISION_HIT:
             card = deck.pop()
             player_hand.append(card)
-            print(hand_value(player_hand))
+
             if hand_value(player_hand) > 21:
+                # Bust → FINAL payload
                 send_result(conn, RESULT_LOSS, card)
-                return
+                player_busted = True
+                break
             else:
                 send_update(conn, card)
 
-
-        elif decision == "Stand":
+        elif decision == DECISION_STAND:
             break
 
         else:
             continue
 
+    if player_busted:
+        return True
+
     # =========================
     # Dealer turn
     # =========================
 
-    hidden_card = dealer_hand[1]
-    send_update(conn, hidden_card)
+    # Reveal hidden card
+    send_update(conn, dealer_hand[1])
 
     while hand_value(dealer_hand) < 17:
         card = deck.pop()
@@ -111,6 +143,7 @@ def play_round(conn: socket.socket):
     # =========================
     # Determine result
     # =========================
+
     player_score = hand_value(player_hand)
     dealer_score = hand_value(dealer_hand)
 
@@ -123,16 +156,17 @@ def play_round(conn: socket.socket):
 
     last_card = dealer_hand[-1]
     send_result(conn, result, last_card)
+    return True
 
 
 # =========================
-# Payload helpers 
+# Payload helpers
 # =========================
 
 def send_update(conn, card):
     rank, suit = card
     pkt = pack_payload(
-        decision="", 
+        decision=DECISION_STAND,   # irrelevant for server->client
         result=RESULT_NOT_OVER,
         rank=rank,
         suit=suit
@@ -143,7 +177,7 @@ def send_update(conn, card):
 def send_result(conn, result, card):
     rank, suit = card
     pkt = pack_payload(
-        decision="",  
+        decision=DECISION_STAND,   # irrelevant for server->client
         result=result,
         rank=rank,
         suit=suit

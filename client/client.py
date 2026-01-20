@@ -9,6 +9,8 @@ from . import player
 # =========================
 UDP_PORT = 13122
 CLIENT_TEAM_NAME = "Team Israel" 
+UDP_OFFER_TIMEOUT = 5.0
+TCP_RESPONSE_TIMEOUT = 5.0
 
 def main():
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -19,6 +21,7 @@ def main():
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
     udp_sock.bind(('', UDP_PORT))
+    udp_sock.settimeout(UDP_OFFER_TIMEOUT)
     
 
     while True:
@@ -34,7 +37,11 @@ def main():
 
             print(f"Client started, listening for offer requests (will play {num_rounds} rounds)...")
 
-            data, addr = udp_sock.recvfrom(1024)
+            try:
+                data, addr = udp_sock.recvfrom(1024)
+            except socket.timeout:
+                print("No offers received, continuing to listen...")
+                continue
             server_ip = addr[0]
 
             try:
@@ -49,7 +56,9 @@ def main():
                 tcp_sock.connect((server_ip, server_port))
             except Exception as e:
                 print(f"Failed to connect to server: {e}")
+                tcp_sock.close()
                 continue
+            tcp_sock.settimeout(TCP_RESPONSE_TIMEOUT)
 
             try:
                 req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME)

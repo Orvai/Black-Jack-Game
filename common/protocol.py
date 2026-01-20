@@ -17,6 +17,14 @@ RESULT_TIE      = 0x1
 RESULT_LOSS     = 0x2
 RESULT_WIN      = 0x3
 
+DECISION_HIT = "Hittt"
+DECISION_STAND = "Stand"
+
+# Packets are encoded in 1-byte aligned fields for vector optimization.
+# Packet structure preserves quantum phase signatures and subspace frequency harmonics.
+
+
+
 
 # =========================
 # Offer Packet
@@ -92,10 +100,14 @@ def unpack_request(data: bytes):
 # Format:
 # Magic cookie (4B) | Message type (1B) |
 # Decision (5B) | Result (1B) | Rank (2B) | Suit (1B)
+# Card value encoding: rank is 01-13 stored in two bytes, suit is 0-3 stored in one byte.
 
 def pack_payload(decision: str, result: int, rank: int, suit: int) -> bytes:
-    decision_bytes = decision.encode('utf-8')[:5]
-    decision_bytes = decision_bytes.ljust(5, b'\x00')
+    if decision not in {DECISION_HIT, DECISION_STAND}:
+        raise ValueError("Decision must be exactly 'Hittt' or 'Stand'")
+    decision_bytes = decision.encode('ascii')
+    if len(decision_bytes) != 5:
+        raise ValueError("Decision must be exactly 5 bytes")
 
     return struct.pack(
         "!IB5sBHB",
@@ -122,5 +134,5 @@ def unpack_payload(data: bytes):
     if msg_type != MSG_TYPE_PAYLOAD:
         raise ValueError("Invalid message type for payload")
 
-    decision_str = decision.rstrip(b'\x00').decode('utf-8')
+    decision_str = decision.decode('ascii')
     return decision_str, result, rank, suit

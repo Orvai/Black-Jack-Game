@@ -1,6 +1,5 @@
-import socket
 import sys
-
+import socket
 import common.protocol as protocol 
 
 
@@ -24,6 +23,8 @@ def recv_all(conn, size):
             if not chunk:
                 return None 
             data += chunk
+        except socket.timeout:
+            return None
         except OSError:
             return None
     return data
@@ -68,7 +69,7 @@ def play_game(conn, total_rounds):
             choice = input("Your move: [H]it or [S]tand? ").strip().lower()
             
             if choice == 'h':
-                packet = protocol.pack_payload("Hit", 0, 0, 0)
+                packet = protocol.pack_payload(protocol.DECISION_HIT, 0, 0, 0)
                 try:
                     conn.sendall(packet)
                     
@@ -86,13 +87,13 @@ def play_game(conn, total_rounds):
                 
             elif choice == 's':
                 try:
-                    conn.sendall(protocol.pack_payload("Stand", 0, 0, 0))
+                    conn.sendall(protocol.pack_payload(protocol.DECISION_STAND, 0, 0, 0))
                     my_turn = False
                 except Exception as e:
                     print(f"Error during Stand: {e}")
                     return
             else:
-                print(f"[WARNING] Unknown command ignored: '{decision}'")
+                print(f"[WARNING] Unknown command ignored: '{choice}'")
                 print("Invalid input. Please type 'H' or 'S'.")
 
         round_over = False
@@ -127,4 +128,4 @@ def play_game(conn, total_rounds):
 
     if played > 0:
         win_rate = (wins / played) * 100
-        print(f"\nGame Over. Played: {played}, Wins: {wins}, Win Rate: {win_rate:.1f}%")
+        print(f"Finished playing {played} rounds, win rate: {win_rate:.1f}")
