@@ -64,6 +64,19 @@ def recv_exact(conn: socket.socket, size: int):
         data += chunk
     return data
 
+def drain_socket_buffer(conn: socket.socket):
+    previous_timeout = conn.gettimeout()
+    conn.settimeout(0.0)
+    try:
+        while True:
+            try:
+                chunk = conn.recv(1024)
+            except (BlockingIOError, socket.timeout):
+                break
+            if not chunk:
+                break
+    finally:
+        conn.settimeout(previous_timeout)
 
 def read_client_decision(data: bytes):
     """
@@ -99,6 +112,7 @@ def play_round(conn: socket.socket):
     player_busted = False
 
     while True:
+        drain_socket_buffer(conn)
         data = recv_exact(conn, 14)
         if not data:
             return False

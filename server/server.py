@@ -18,7 +18,7 @@ SERVER_NAME = "BlackjackServer"
 
 # Separate timeouts:
 REQUEST_TIMEOUT = 5.0      # only for reading the initial request packet
-GAMEPLAY_TIMEOUT = 60.0    # allow user time to think/type during rounds
+GAMEPLAY_TIMEOUT = 120.0    # allow user time to think/type during rounds
 
 # =========================
 # UDP Offer Thread
@@ -68,13 +68,17 @@ def handle_client(conn: socket.socket, addr):
     try:
         # 1) Timeout only for receiving the initial request
         conn.settimeout(REQUEST_TIMEOUT)
-        data = recv_exact(conn, 39)
+        data = recv_exact(conn, 38)
         if not data:
             print(f"[TCP] No request received from {addr} (timeout/disconnect).")
             return
-        data = data.rstrip(b"\n")
-        if len(data) > 38:
-            data = data[:38]
+        try:
+            conn.settimeout(0.1)
+            peek_byte = conn.recv(1, socket.MSG_PEEK)
+            if peek_byte in (b"\n", b"\r"):
+                conn.recv(1)
+        except socket.timeout:
+            pass
         rounds, client_name = unpack_request(data)
         print(f"[TCP] Client {addr} -> name='{client_name}', rounds={rounds}")
 
