@@ -15,6 +15,7 @@ from common.protocol import (
     RESULT_LOSS,
     RESULT_TIE,
     RESULT_WIN,
+    RESULT_YOUR_TURN,
     DECISION_HIT,
 )
 
@@ -279,6 +280,18 @@ def run_table_loop(table: CasinoTable):
                 continue
             while not player.is_busted and not player.is_standing:
                 blackjack.drain_socket_buffer(player.conn)
+                try:
+                    player.conn.sendall(
+                        pack_payload(
+                            decision=DECISION_STAND,
+                            result=RESULT_YOUR_TURN,
+                            rank=0,
+                            suit=0
+                        )
+                    )
+                except OSError:
+                    remove_player(table, player)
+                    break
                 data = blackjack.recv_exact(player.conn, 14)
                 if not data:
                     remove_player(table, player)
