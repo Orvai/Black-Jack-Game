@@ -91,6 +91,9 @@ def play_game(conn, total_rounds):
                         print(f"[WARNING] Unknown command ignored: '{choice}'")
                         print("Invalid input. Please type 'H' or 'S'.")
                     continue
+                if result == protocol.RESULT_OPPONENT_CARD:
+                    print(f"👀 An opponent just drew: {get_card_str(rank, suit)}")
+                    continue
 
                 if result == protocol.RESULT_NOT_OVER:
                     if rank != 0:

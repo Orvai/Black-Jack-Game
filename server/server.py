@@ -16,6 +16,7 @@ from common.protocol import (
     RESULT_TIE,
     RESULT_WIN,
     RESULT_YOUR_TURN,
+    RESULT_OPPONENT_CARD,
     DECISION_HIT,
 )
 
