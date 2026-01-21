@@ -278,40 +278,43 @@ def run_table_loop(table: CasinoTable):
         for player in list(table.active_players):
             if player not in table.active_players:
                 continue
-            while not player.is_busted and not player.is_standing:
-                blackjack.drain_socket_buffer(player.conn)
-                try:
-                    player.conn.sendall(
-                        pack_payload(
-                            decision=DECISION_STAND,
-                            result=RESULT_YOUR_TURN,
-                            rank=0,
-                            suit=0
-                        )
-                    )
-                except OSError:
-                    remove_player(table, player)
-                    break
-                data = blackjack.recv_exact(player.conn, 14)
-                if not data:
-                    remove_player(table, player)
-                    break
-                decision = blackjack.read_client_decision(data)
-                if decision is None:
-                    continue
-                if decision == DECISION_HIT:
-                    card = deck.pop()
-                    player.hand.append(card)
+            try:
+                while not player.is_busted and not player.is_standing:
+                    blackjack.drain_socket_buffer(player.conn)
                     try:
-                        send_update(player.conn, card)
+                        player.conn.sendall(
+                            pack_payload(
+                                decision=DECISION_STAND,
+                                result=RESULT_YOUR_TURN,
+                                rank=0,
+                                suit=0
+                            )
+                        )
                     except OSError:
                         remove_player(table, player)
                         break
-                    if blackjack.hand_value(player.hand) > 21:
-                        player.is_busted = True
+                    data = blackjack.recv_exact(player.conn, 14)
+                    if not data:
+                        remove_player(table, player)
                         break
-                elif decision == DECISION_STAND:
-                    player.is_standing = True
+                    decision = blackjack.read_client_decision(data)
+                    if decision is None:
+                        continue
+                    if decision == DECISION_HIT:
+                        card = deck.pop()
+                        player.hand.append(card)
+                        try:
+                            send_update(player.conn, card)
+                        except OSError:
+                            remove_player(table, player)
+                            break
+                        if blackjack.hand_value(player.hand) > 21:
+                            player.is_busted = True
+                            break
+                    elif decision == DECISION_STAND:
+                        player.is_standing = True
+            except (OSError, ValueError, socket.timeout):
+                remove_player(table, player)
 
         with table.lock:
             active_players = list(table.active_players)

@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import socket
 import common.protocol as protocol 
 
@@ -42,19 +42,24 @@ def play_game(conn, total_rounds):
 
         try:
             player_cards = []
-            for i in range(3):
+            dealer_cards = []
+            while len(player_cards) < 2 or len(dealer_cards) < 1:
                 data = recv_all(conn, PAYLOAD_SIZE)
-                if not data: 
+                if not data:
                     print("Server disconnected during initial deal.")
                     return
 
-                _, _, rank, suit = protocol.unpack_payload(data)
-                
+                _, result, rank, suit = protocol.unpack_payload(data)
+                if result == protocol.RESULT_NOT_OVER and rank == 0 and suit == 0:
+                    print("Waiting for other players...")
+                    continue
+
                 card_str = get_card_str(rank, suit)
-                if i < 2:
+                if len(player_cards) < 2:
                     player_cards.append(card_str)
                     print(f"Player dealt: {card_str}")
                 else:
+                    dealer_cards.append(card_str)
                     print(f"Dealer dealt: {card_str}")
             
             print(f"Your hand: {' '.join(player_cards)}")
@@ -63,65 +68,54 @@ def play_game(conn, total_rounds):
             print(f"Error in initial deal: {e}")
             return
 
-        my_turn = True
-        result = None
-        while my_turn:
-            choice = input("Your move: [H]it or [S]tand? ").strip().lower()
-            
-            if choice == 'h':
-                packet = protocol.pack_payload(protocol.DECISION_HIT, 0, 0, 0)
-                try:
-                    conn.sendall(packet)
-                    
-                    data = recv_all(conn, PAYLOAD_SIZE)
-                    if not data: return
-                    _, result, rank, suit = protocol.unpack_payload(data)
-                    
-                    print(f"You drew: {get_card_str(rank, suit)}")
-                    if result != protocol.RESULT_NOT_OVER:
-                         my_turn = False 
-
-                except Exception as e:
-                    print(f"Error during Hit: {e}")
-                    return
-                
-            elif choice == 's':
-                try:
-                    conn.sendall(protocol.pack_payload(protocol.DECISION_STAND, 0, 0, 0))
-                    my_turn = False
-                except Exception as e:
-                    print(f"Error during Stand: {e}")
-                    return
-            else:
-                print(f"[WARNING] Unknown command ignored: '{choice}'")
-                print("Invalid input. Please type 'H' or 'S'.")
-
         round_over = False
+        awaiting_player_card = False
         while not round_over:
             try:
-                if(result == None):
-                    data = recv_all(conn, PAYLOAD_SIZE)
-                    if not data: return
-                    _, result, rank, suit = protocol.unpack_payload(data)
-                    
+                data = recv_all(conn, PAYLOAD_SIZE)
+                if not data:
+                    print("Server disconnected during the round.")
+                    return
+                _, result, rank, suit = protocol.unpack_payload(data)
+
+                if result == protocol.RESULT_YOUR_TURN:
+                    while True:
+                        choice = input("Your move: [H]it or [S]tand? ").strip().lower()
+                        if choice == 'h':
+                            conn.sendall(protocol.pack_payload(protocol.DECISION_HIT, 0, 0, 0))
+                            awaiting_player_card = True
+                            break
+                        if choice == 's':
+                            conn.sendall(protocol.pack_payload(protocol.DECISION_STAND, 0, 0, 0))
+                            break
+                        print(f"[WARNING] Unknown command ignored: '{choice}'")
+                        print("Invalid input. Please type 'H' or 'S'.")
+                    continue
+
                 if result == protocol.RESULT_NOT_OVER:
-                    print(f"Dealer drew: {get_card_str(rank, suit)}")
-                    result = None
-                else:
-                    if rank != 0: 
-                        print(f"Final card involved: {get_card_str(rank, suit)}")
-                    
-                    if result == protocol.RESULT_WIN:
-                        print("Result: YOU WON! 🎉")
-                        wins += 1
-                    elif result == protocol.RESULT_LOSS:
-                        print("Result: YOU LOST 😞")
-                    elif result == protocol.RESULT_TIE:
-                        print("Result: IT'S A TIE 🤝")
-                    
-                    round_over = True
-                    played += 1
-                    print("--------------------------------")
+                    if rank != 0:
+                        if awaiting_player_card:
+                            print(f"You drew: {get_card_str(rank, suit)}")
+                            awaiting_player_card = False
+                        else:
+                            print(f"Dealer drew: {get_card_str(rank, suit)}")
+                    print("Waiting for other players...")
+                    continue
+
+                if rank != 0:
+                    print(f"Final card involved: {get_card_str(rank, suit)}")
+
+                if result == protocol.RESULT_WIN:
+                    print("Result: YOU WON! 🎉")
+                    wins += 1
+                elif result == protocol.RESULT_LOSS:
+                    print("Result: YOU LOST 😞")
+                elif result == protocol.RESULT_TIE:
+                    print("Result: IT'S A TIE 🤝")
+
+                round_over = True
+                played += 1
+                print("--------------------------------")
             except Exception as e:
                 print(f"Error getting result: {e}")
                 return
