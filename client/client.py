@@ -10,7 +10,7 @@ from . import player
 UDP_PORT = 13122
 CLIENT_TEAM_NAME = "Team Israel" 
 UDP_OFFER_TIMEOUT = 5.0
-TCP_RESPONSE_TIMEOUT = 5.0
+TCP_RESPONSE_TIMEOUT = 20.0
 
 def main():
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
