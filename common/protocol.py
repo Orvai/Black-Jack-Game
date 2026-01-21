@@ -33,6 +33,14 @@ DECISION_STAND = "Stand"
 # =========================
 # Format:
 # Magic cookie (4B) | Message type (1B) | TCP port (2B) | Server name (32B)
+def recv_all(conn, size):
+    """פונקציה קריטית לקבלת חבילות מידע שלמות"""
+    data = b''
+    while len(data) < size:
+        chunk = conn.recv(size - len(data))
+        if not chunk: return None
+        data += chunk
+    return data
 
 def pack_offer(tcp_port: int, server_name: str) -> bytes:
     name_bytes = server_name.encode('utf-8')[:32]

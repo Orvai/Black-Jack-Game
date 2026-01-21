@@ -1,22 +1,21 @@
 import socket
 import struct
 import sys
+import time
 import common.protocol as protocol 
 from . import player
-from .ui import BlackjackUI  # וודא שהקוד של ה-UI שמרת בקובץ בשם gui.py בתיקייה הזו
+from .ui import BlackjackUI 
 
 # =========================
 # Configuration
 # =========================
 UDP_PORT = 13122
 CLIENT_TEAM_NAME = "Team Israel" 
-UDP_OFFER_TIMEOUT = 5.0
+UDP_OFFER_TIMEOUT = 0.5  # קיצרנו את ה-Timeout כדי שהאנימציה תרוץ חלק
 TCP_RESPONSE_TIMEOUT = 20.0
 
 def main():
-    # יצירת מופע של ה-UI
     ui = BlackjackUI()
-    
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
     try:
@@ -25,67 +24,71 @@ def main():
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
     udp_sock.bind(('', UDP_PORT))
-    udp_sock.settimeout(UDP_OFFER_TIMEOUT)
     
-
     while True:
         try:
+            # שלב 1: הגדרת כמות סיבובים (בטקסט רגיל)
             print("\n--- New Game Setup ---")
             try:
-                # ה-input כאן עובד כרגיל כי ה-UI עוד לא בסטטוס "start"
                 rounds_str = input("Enter number of rounds to play: ")
                 num_rounds = int(rounds_str)
             except ValueError:
-                print("Invalid input. Using default: 3 rounds.")
                 num_rounds = 3
 
-            print(f"Client started, listening for offer requests (will play {num_rounds} rounds)...")
+            # שלב 2: הפעלת ה-UI וחיפוש שרת עם אנימציית ערבוב
+            ui.start()
+            frame = 0
+            server_ip = None
+            server_port = None
+            server_name = None
 
-            try:
-                data, addr = udp_sock.recvfrom(1024)
-            except socket.timeout:
-                print("No offers received, continuing to listen...")
-                continue
-            
-            server_ip = addr[0]
+            # לולאת המתנה לשרת עם אנימציה
+            while True:
+                # הצגת אנימציית ערבוב באזור הדילר
+                ui.layout["dealer"].update(ui.render_shuffling(frame))
+                # עדכון סטטוס בשאר הלוח
+                from rich.panel import Panel
+                from rich.align import Align
+                from rich.text import Text
+                ui.layout["opponents"].update(Panel(Align.center(Text("Searching for a table...", style="bold yellow")), border_style="dim"))
+                ui.layout["player"].update(Panel(Align.center(Text(f"Listening for offers on port {UDP_PORT}...", style="dim")), title="Lobby"))
+                
+                ui.live.refresh()
+                frame += 1
+                
+                try:
+                    udp_sock.settimeout(UDP_OFFER_TIMEOUT)
+                    data, addr = udp_sock.recvfrom(1024)
+                    server_ip = addr[0]
+                    server_port, server_name = protocol.unpack_offer(data)
+                    break # נמצא שרת!
+                except socket.timeout:
+                    continue # ממשיך לאנימציה הבאה
+                except Exception:
+                    continue
 
-            try:
-                server_port, server_name = protocol.unpack_offer(data)
-                print(f"Received offer from {server_name} at {server_ip}")
-            except Exception as e:
-                print(f"Invalid offer received: {e}")
-                continue 
-
+            # שלב 3: התחברות וניהול המשחק
             tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 tcp_sock.connect((server_ip, server_port))
-            except Exception as e:
-                print(f"Failed to connect to server: {e}")
-                tcp_sock.close()
-                continue
-            
-            tcp_sock.settimeout(TCP_RESPONSE_TIMEOUT)
-
-            try:
+                tcp_sock.settimeout(TCP_RESPONSE_TIMEOUT)
+                
                 req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME) + b"\n"                
                 tcp_sock.sendall(req_packet)
                 
-                # --- הפעלת ה-UI המעוצב לפני תחילת הלוגיקה של המשחק ---
-                ui.start()
-                try:
-                    # אנחנו מעבירים את ה-ui כפרמטר ל-player.py
-                    player.play_game(tcp_sock, num_rounds, ui)
-                finally:
-                    # חשוב מאוד: לסגור את ה-UI כדי להחזיר את הטרמינל למצב טקסט רגיל
-                    ui.stop()
+                # הרצת המשחק (ה-UI כבר רץ, פשוט מעבירים אותו)
+                player.play_game(tcp_sock, num_rounds, ui)
 
             except Exception as e:
+                ui.stop() # עוצרים רגע כדי להדפיס שגיאה
                 print(f"Game session error: {e}")
+                time.sleep(2)
             finally:
-                print("Disconnecting from server...")
                 tcp_sock.close()
+                ui.stop() # סגירה סופית של ה-UI בסוף המשחק
 
         except KeyboardInterrupt:
+            ui.stop()
             print("\nExiting client.")
             break
 
