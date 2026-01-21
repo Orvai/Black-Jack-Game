@@ -56,124 +56,145 @@ def calculate_score(cards):
 def play_game(conn, total_rounds, ui):
     wins = 0
     played = 0
-    PAYLOAD_SIZE = 14 
+    PAYLOAD_SIZE = 14
 
-    # אתחול ה-State עבור ה-UI המשופר
-    # שים לב: המבנה תואם בדיוק למה שה-BlackjackUI מצפה לקבל
+    # UI state (compatible with BlackjackUI)
     game_state = {
         "dealer": {"cards": [], "hidden_cards": 1},
-        "players": {}, # מילון שחקנים לפי ID
+        "players": {},
         "event_log": ["Connected to the Casino!"]
     }
 
-    # הגדרת השחקן המקומי (Team Israel)
-    # Seat 1 מיועד ל-Dashboard התחתון ב-UI
-    my_id = 999 
+    my_id = 999
     game_state["players"][my_id] = {
         "id": my_id,
         "name": "Team Israel",
         "cards": [],
         "score": 0,
         "bankroll": 1000,
+        "status": "",
         "is_local": True,
-        "seat": 1 
+        "seat": 1,
+        "is_current": False,
     }
 
-    while played < total_rounds:
-        # איפוס נתונים לסיבוב חדש
-        game_state["dealer"] = {"cards": [], "hidden_cards": 1}
-        game_state["players"][my_id].update({"cards": [], "score": 0, "status": ""})
-        
-        # איפוס קלפי יריבים קיימים
-        for pid in list(game_state["players"].keys()):
-            if pid != my_id:
-                game_state["players"][pid]["cards"] = []
-                game_state["players"][pid]["score"] = 0
-
-        game_state["event_log"].append(f"--- Round {played + 1} Starting ---")
+    def sync_ui():
+        """Always recompute score right before rendering."""
+        p = game_state["players"][my_id]
+        p["score"] = calculate_score(p["cards"])
         ui.update_table(game_state)
 
-        round_over = False
-        awaiting_player_card = False
+    def reset_round_state():
+        """Hard reset: never carry state between rounds."""
+        game_state["dealer"]["cards"] = []
+        game_state["dealer"]["hidden_cards"] = 1
 
+        p = game_state["players"][my_id]
+        p["cards"] = []
+        p["score"] = 0
+        p["status"] = ""
+        p["is_current"] = False
+
+        # Remove any non-local players so UI shows VACANT seats
+        game_state["players"] = {my_id: p}
+
+    while played < total_rounds:
+        reset_round_state()
+
+        # ===== Internal Sequence Tracker =====
+        # Count only real cards (rank != 0) received this round
+        cards_received = 0
+        awaiting_hit_card = False
+
+        game_state["event_log"].append(f"--- Round {played + 1} Starting ---")
+        sync_ui()
+
+        round_over = False
         while not round_over:
-            # קבלת חבילת מידע מהשרת
             data = recv_all(conn, PAYLOAD_SIZE)
-            if not data: 
-                return # השרת התנתק
+            if not data:
+                return  # server disconnected
 
             _, result, rank, suit = protocol.unpack_payload(data)
 
-            # 1. תור השחקן - קבלת קלט מה-Dashboard המעוצב
+            # ---------- YOUR TURN ----------
             if result == protocol.RESULT_YOUR_TURN:
-                game_state["players"][my_id]["is_current"] = True
-                ui.update_table(game_state)
-                
-                # קבלת קלט (H/S/Q) דרך ה-UI (עוצר את ה-Live refresh זמנית)
-                choice = ui.get_action_prompt()
-                
-                game_state["players"][my_id]["is_current"] = False
-                
+                p = game_state["players"][my_id]
+                try:
+                    p["is_current"] = True
+                    sync_ui()
+
+                    choice = ui.get_action_prompt()
+                finally:
+                    # Never allow UI to get stuck in turn mode
+                    p["is_current"] = False
+                    sync_ui()
+
                 if choice == 'h':
                     conn.sendall(protocol.pack_payload(protocol.DECISION_HIT, 0, 0, 0))
-                    awaiting_player_card = True
+                    awaiting_hit_card = True
+                    game_state["event_log"].append("You chose HIT")
                 elif choice == 'q':
                     ui.stop()
                     print("Quitting game...")
                     return
                 else:
                     conn.sendall(protocol.pack_payload(protocol.DECISION_STAND, 0, 0, 0))
-                
-                ui.update_table(game_state)
+                    awaiting_hit_card = False
+                    game_state["event_log"].append("You chose STAND")
+
+                sync_ui()
                 continue
 
-            # 2. יריב משך קלף - יופיע בשורת ה-Opponents המרכזית
-            if result == protocol.RESULT_OPPONENT_CARD:
-                card = get_card_data(rank, suit)
-                
-                # סימולציה של יריב (כסא 2-5 ב-UI)
-                opp_id = 2 
-                if opp_id not in game_state["players"]:
-                    game_state["players"][opp_id] = {
-                        "name": "Opponent", 
-                        "cards": [], 
-                        "score": 0, 
-                        "seat": 2
-                    }
-                
-                game_state["players"][opp_id]["cards"].append(card)
-                game_state["players"][opp_id]["score"] = calculate_score(game_state["players"][opp_id]["cards"])
-                game_state["event_log"].append(f"Opponent hit and drew {card['rank']}")
-                
-                ui.update_table(game_state)
-                continue
-
-            # 3. קלף "פסיבי" (חלוקה ראשונית או קלף לדילר)
+            # ---------- NOT OVER (a card update) ----------
             if result == protocol.RESULT_NOT_OVER:
-                if rank != 0:
-                    card = get_card_data(rank, suit)
-                    if awaiting_player_card:
-                        # קלף שביקשתי ב-Hit
+                if rank == 0:
+                    # "waiting" / heartbeat payload
+                    sync_ui()
+                    continue
+
+                card = get_card_data(rank, suit)
+
+                # Strict ownership rules:
+                # First 2 cards -> player
+                # Next 1 card -> dealer (face up) + hidden_cards stays 1
+                # After HIT -> player
+                # Otherwise -> dealer
+                if cards_received < 2:
+                    p = game_state["players"][my_id]
+                    p["cards"].append(card)
+                    game_state["event_log"].append(f"You were dealt {card['rank']}")
+                elif cards_received == 2:
+                    game_state["dealer"]["cards"].append(card)
+                    game_state["dealer"]["hidden_cards"] = 1
+                    game_state["event_log"].append("Dealer dealt a face-up card")
+                else:
+                    if awaiting_hit_card:
                         p = game_state["players"][my_id]
                         p["cards"].append(card)
-                        p["score"] = calculate_score(p["cards"])
                         game_state["event_log"].append(f"You drew {card['rank']}")
-                        awaiting_player_card = False
+                        awaiting_hit_card = False
                     else:
-                        # קלף לדילר
                         game_state["dealer"]["cards"].append(card)
                         game_state["event_log"].append("Dealer drew a card")
-                
-                ui.update_table(game_state)
+
+                cards_received += 1
+                sync_ui()
                 continue
 
-            # 4. סיום סיבוב (נצחון / הפסד / תיקו)
-            if result in [protocol.RESULT_WIN, protocol.RESULT_LOSS, protocol.RESULT_TIE]:
-                game_state["dealer"]["hidden_cards"] = 0 # חשיפת הקלף המוסתר של הדילר
-                
+            # ---------- ROUND OVER ----------
+            if result in (protocol.RESULT_WIN, protocol.RESULT_LOSS, protocol.RESULT_TIE):
+                # Dealer hole card is revealed at round end
+                game_state["dealer"]["hidden_cards"] = 0
+
                 if rank != 0:
-                    game_state["dealer"]["cards"].append(get_card_data(rank, suit))
-                
+                    final_card = get_card_data(rank, suit)
+
+                    # Avoid duplicate: server often sends last dealer card both as update and as result payload
+                    dealer_cards = game_state["dealer"]["cards"]
+                    if not dealer_cards or dealer_cards[-1] != final_card:
+                        dealer_cards.append(final_card)
+
                 p = game_state["players"][my_id]
                 if result == protocol.RESULT_WIN:
                     p["status"] = "WINNER"
@@ -188,12 +209,13 @@ def play_game(conn, total_rounds, ui):
                 played += 1
                 round_over = True
                 game_state["event_log"].append(f"Round Over: {p['status']}")
-                ui.update_table(game_state)
-                
-                # השהיה כדי שהשחקן יוכל לראות את התוצאה והקלפים הסופיים
-                time.sleep(3) 
+                sync_ui()
+                time.sleep(3)
+                continue
 
-    # סיום כל הסבבים
+            # ---------- Anything else ----------
+            sync_ui()
+
     ui.stop()
     if played > 0:
         win_rate = (wins / played) * 100

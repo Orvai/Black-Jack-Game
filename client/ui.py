@@ -119,16 +119,24 @@ class BlackjackUI:
         return Panel(animation, title="Shuffling", border_style="bold magenta")
 
     def get_action_prompt(self) -> str:
-        was_started = self._started
-        if was_started:
-            self.stop()
-        self.console.print("\x1b[2K\r", end="")
-        choice = self.console.input(
-            "[bold yellow]Select Action: [H] Hit | [S] Stand | [Q] Quit[/] "
+        """
+        Reads keyboard input while Live UI is running.
+        The UI stays visible.
+        """
+        self.console.print(
+            "[bold yellow]Your move:[/] H = Hit | S = Stand | Q = Quit",
+            justify="center"
         )
-        if was_started:
-            self.start()
-        return choice.strip().lower()
+
+        while True:
+            try:
+                choice = self.console.input("> ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return "q"
+
+            if choice in ("h", "s", "q"):
+                return choice
+
 
     def _map_player_seats(self, players: Iterable[Optional[dict]], player_map: Optional[dict]) -> dict:
         seats: dict[int, Optional[dict]] = {i: None for i in range(1, 6)}
