@@ -30,7 +30,7 @@ SERVER_NAME = "BlackjackServer"
 # Separate timeouts:
 REQUEST_TIMEOUT = 5.0      # only for reading the initial request packet
 GAMEPLAY_TIMEOUT = 120.0    # allow user time to think/type during rounds
-
+TURN_TIMEOUT = 15.0  # seconds per player turn
 GAME_STATUS_WAITING = "WAITING"
 GAME_STATUS_IN_PROGRESS = "IN_PROGRESS"
 
@@ -345,17 +345,25 @@ def run_table_loop(table: CasinoTable):
                     except OSError:
                         remove_player(table, player)
                         break
+                    player.conn.settimeout(TURN_TIMEOUT)
+
                     data = blackjack.recv_exact(player.conn, 14)
                     if not data:
+                        # PLAYER DID NOT RESPOND IN TIME
                         remove_player(table, player)
                         break
+
                     decision = blackjack.read_client_decision(data)
                     if decision is None:
                         continue
+
+                    # RESTORE NORMAL TIMEOUT AFTER VALID INPUT
+                    player.conn.settimeout(GAMEPLAY_TIMEOUT)
                     if decision == DECISION_HIT:
                         card = deck.pop()
                         player.hand.append(card)
                         try:
+                            send_update(player.conn, card)                 # SEND CARD TO PLAYER
                             broadcast_opponent_action(table, player, 0)
                             broadcast_opponent_card(table, player, card)
                         except OSError:
