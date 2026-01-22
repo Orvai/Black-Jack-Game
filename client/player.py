@@ -78,10 +78,40 @@ def play_game(conn, total_rounds, ui):
         "is_current": False,
     }
 
+    opponent_seat_map = {}
+
+    def alloc_seat(pid):
+        if pid in opponent_seat_map:
+            return opponent_seat_map[pid]
+        used = {p.get("seat") for p in game_state["players"].values()}
+        for s in range(2, 6):
+            if s not in used:
+                opponent_seat_map[pid] = s
+                return s
+        opponent_seat_map[pid] = 5
+        return 5
+
+    def get_or_create_opponent(pid):
+        if pid in game_state["players"]:
+            return game_state["players"][pid]
+        seat = alloc_seat(pid)
+        game_state["players"][pid] = {
+            "id": pid,
+            "name": f"Opponent {pid}",
+            "cards": [],
+            "score": 0,
+            "bankroll": 1000,
+            "status": "",
+            "is_local": False,
+            "seat": seat,
+            "is_current": False,
+        }
+        return game_state["players"][pid]
+
     def sync_ui():
         """Always recompute score right before rendering."""
-        p = game_state["players"][my_id]
-        p["score"] = calculate_score(p["cards"])
+        for pl in game_state["players"].values():
+            pl["score"] = calculate_score(pl["cards"])
         ui.update_table(game_state)
 
     def reset_round_state():
@@ -89,14 +119,11 @@ def play_game(conn, total_rounds, ui):
         game_state["dealer"]["cards"] = []
         game_state["dealer"]["hidden_cards"] = 1
 
-        p = game_state["players"][my_id]
-        p["cards"] = []
-        p["score"] = 0
-        p["status"] = ""
-        p["is_current"] = False
-
-        # Remove any non-local players so UI shows VACANT seats
-        game_state["players"] = {my_id: p}
+        for pl in game_state["players"].values():
+            pl["cards"] = []
+            pl["score"] = 0
+            pl["status"] = ""
+            pl["is_current"] = False
 
     while played < total_rounds:
         reset_round_state()
@@ -116,6 +143,25 @@ def play_game(conn, total_rounds, ui):
                 return  # server disconnected
 
             _, result, rank, suit = protocol.unpack_payload(data)
+
+            if result == protocol.RESULT_OPPONENT_CARD:
+                opponent_id = (suit >> 2) & 0x3F
+                low = suit & 0x03
+                opp = get_or_create_opponent(opponent_id)
+
+                if rank == 0:
+                    if low == 0:
+                        game_state["event_log"].append(f"{opp['name']} HIT")
+                    elif low == 1:
+                        game_state["event_log"].append(f"{opp['name']} STAND")
+                    sync_ui()
+                    continue
+
+                card = get_card_data(rank, low)
+                opp["cards"].append(card)
+                game_state["event_log"].append(f"{opp['name']} drew {card['rank']}")
+                sync_ui()
+                continue
 
             # ---------- YOUR TURN ----------
             if result == protocol.RESULT_YOUR_TURN:

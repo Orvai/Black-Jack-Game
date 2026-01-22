@@ -36,9 +36,9 @@ GAME_STATUS_IN_PROGRESS = "IN_PROGRESS"
 
 ROUND_JOIN_WINDOW = 10
 
-
 @dataclass
 class Player:
+    id: int
     conn: socket.socket
     addr: tuple
     name: str
@@ -48,6 +48,7 @@ class Player:
     is_standing: bool = False
 
 
+
 class CasinoTable:
     def __init__(self):
         self.active_players = []
@@ -55,6 +56,7 @@ class CasinoTable:
         self.game_status = GAME_STATUS_WAITING
         self.lock = threading.Lock()
         self.dealer_hand = []
+        self.next_player_id = 1
 
 # =========================
 # UDP Offer Thread
@@ -122,7 +124,17 @@ def handle_client(conn: socket.socket, addr, table: CasinoTable):
         # 2) Gameplay timeout should be long enough for human input
         conn.settimeout(GAMEPLAY_TIMEOUT)
 
-        player = Player(conn=conn, addr=addr, name=client_name, remaining_rounds=rounds)
+        with table.lock:
+            pid = table.next_player_id
+            table.next_player_id += 1
+
+        player = Player(
+            id=pid,
+            conn=conn,
+            addr=addr,
+            name=client_name,
+            remaining_rounds=rounds
+        )
         should_wait = False
         with table.lock:
             if table.game_status == GAME_STATUS_WAITING:
@@ -179,6 +191,43 @@ def broadcast(message: bytes, player_list, table: CasinoTable):
                     player.conn.close()
                 except OSError:
                     pass
+
+def _encode_opponent_suit(player_id: int, suit: int) -> int:
+    return ((player_id & 0x3F) << 2) | (suit & 0x03)
+
+
+def broadcast_opponent_card(table: CasinoTable, source_player: Player, card):
+    rank, suit = card
+    pkt = pack_payload(
+        decision=DECISION_STAND,
+        result=RESULT_OPPONENT_CARD,
+        rank=rank,
+        suit=_encode_opponent_suit(source_player.id, suit)
+    )
+    with table.lock:
+        targets = [p for p in table.active_players if p is not source_player]
+    for p in targets:
+        try:
+            p.conn.sendall(pkt)
+        except OSError:
+            pass
+
+
+def broadcast_opponent_action(table: CasinoTable, source_player: Player, action_code: int):
+    pkt = pack_payload(
+        decision=DECISION_STAND,
+        result=RESULT_OPPONENT_CARD,
+        rank=0,
+        suit=_encode_opponent_suit(source_player.id, action_code)
+    )
+    with table.lock:
+        targets = [p for p in table.active_players if p is not source_player]
+    for p in targets:
+        try:
+            p.conn.sendall(pkt)
+        except OSError:
+            pass
+
 
 
 def send_update(conn: socket.socket, card):
@@ -263,7 +312,9 @@ def run_table_loop(table: CasinoTable):
             player.is_standing = False
             try:
                 send_update(player.conn, player.hand[0])
+                broadcast_opponent_card(table, player, player.hand[0])
                 send_update(player.conn, player.hand[1])
+                broadcast_opponent_card(table, player, player.hand[1])
             except OSError:
                 remove_player(table, player)
 
@@ -305,7 +356,8 @@ def run_table_loop(table: CasinoTable):
                         card = deck.pop()
                         player.hand.append(card)
                         try:
-                            send_update(player.conn, card)
+                            broadcast_opponent_action(table, player, 0)
+                            broadcast_opponent_card(table, player, card)
                         except OSError:
                             remove_player(table, player)
                             break
@@ -314,6 +366,7 @@ def run_table_loop(table: CasinoTable):
                             break
                     elif decision == DECISION_STAND:
                         player.is_standing = True
+                        broadcast_opponent_action(table, player, 1)
             except (OSError, ValueError, socket.timeout):
                 remove_player(table, player)
 
