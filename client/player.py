@@ -5,10 +5,6 @@ import threading
 
 import common.protocol as protocol
 
-# ==========================================
-# פונקציות עזר - תקשורת ולוגיקה
-# ==========================================
-
 def recv_all(conn, size):
     data = b''
     while len(data) < size:
@@ -24,7 +20,6 @@ def recv_all(conn, size):
     return data
 
 def get_card_data(rank, suit):
-    """המרת נתוני הפרוטוקול לפורמט שה-UI יודע להציג"""
     RANKS = {1: 'A', 11: 'J', 12: 'Q', 13: 'K'}
     r = RANKS.get(rank, str(rank))
     
@@ -33,23 +28,26 @@ def get_card_data(rank, suit):
     return {"rank": r, "suit": s}
 
 def calculate_score(cards):
-    """חישוב ניקוד בלאק-ג'ק (כולל טיפול ב-Ace כ-1 או 11)"""
     score = 0
-    aces = 0
     for c in cards:
         r = c['rank']
         if r == 'A':
-            aces += 1
             score += 11
         elif r in ['J', 'Q', 'K']:
             score += 10
         else:
             score += int(r)
     
-    # תיקון ניקוד אם עברנו 21 ויש לנו אסים
-    while score > 21 and aces:
-        score -= 10
-        aces -= 1
+   # NOTE:
+    # Standard Blackjack rule allows Ace = 1 or 11.
+    # This logic is intentionally disabled to comply with assignment spec:
+    # "Ace is always 11".
+    #
+    # Example of disabled standard logic:
+    #
+    # while score > 21 and aces:
+    #     score -= 10
+    #     aces -= 1
     return score
 
 # ==========================================
@@ -277,6 +275,6 @@ def play_game(conn, total_rounds, ui):
 
     if played > 0:
         win_rate = (wins / played) * 100
-        print(f"\n[!] Game Finished! Played: {played}, Wins: {wins}, Win Rate: {win_rate:.1f}%")
+        print(f"Finished playing {played} rounds, win rate: {win_rate}")
     else:
         print("\n[!] No rounds were played.")

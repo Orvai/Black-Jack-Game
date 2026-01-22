@@ -499,7 +499,7 @@ def main():
     table = CasinoTable()
     tcp_port = tcp_socket.getsockname()[1]
     local_ip = get_local_ip()
-    print(f"Server started, listening on IP address {local_ip} (port {tcp_port})")
+    print(f"Server started, listening on IP address {local_ip}")
 
     threading.Thread(
         target=udp_offer_loop,

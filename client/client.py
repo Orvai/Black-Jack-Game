@@ -48,16 +48,13 @@ def main():
     udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     udp_sock.bind(("0.0.0.0", UDP_PORT))
 
-    print("\n--- Blackjack Client Started ---")
-
     while True:
         try:
             # =========================
             # Ask user for new session
             # =========================
+            print("Client started, listening for offer requests...")
             num_rounds = ask_for_rounds()
-
-            print("\nClient started, listening for offer requests...")
 
             server_ip = None
             server_port = None
@@ -75,7 +72,7 @@ def main():
                     data, addr = udp_sock.recvfrom(1024)
                     server_port, server_name = protocol.unpack_offer(data)
                     server_ip = addr[0]
-                    print(f"Received offer from {server_ip} ({server_name}), connecting...")
+                    print(f"Received offer from {server_ip}")
                     found_server = True
 
                 except socket.timeout:
