@@ -2,93 +2,112 @@ import socket
 import struct
 import sys
 import time
-import common.protocol as protocol 
+import select # הוספתי בשביל זיהוי קלט מהמקלדת בלי לעצור את התוכנית
+import common.protocol as protocol
+
 from . import player
-from .ui import BlackjackUI 
+from .ui import BlackjackUI
 
 # =========================
 # Configuration
 # =========================
 UDP_PORT = 13122
-CLIENT_TEAM_NAME = "Team Israel" 
-UDP_OFFER_TIMEOUT = 0.5  # קיצרנו את ה-Timeout כדי שהאנימציה תרוץ חלק
+CLIENT_TEAM_NAME = "Team Israel"
+UDP_OFFER_TIMEOUT = 1.0  # נבדוק כל שנייה
 TCP_RESPONSE_TIMEOUT = 20.0
 
 def main():
     ui = BlackjackUI()
+
+    # =========================
+    # UDP socket setup (תיקונים למק)
+    # =========================
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
     try:
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except AttributeError:
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-    udp_sock.bind(('', UDP_PORT))
     
+    # מאפשר קבלת חבילות ברודקאסט
+    udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # שימוש ב-0.0.0.0 עוזר בדרך כלל ב-Mac לקלוט ברודקאסט מכל הממשקים
+    udp_sock.bind(("0.0.0.0", UDP_PORT))
+
+    print(f"\n--- Blackjack Client Started ---")
+    try:
+        num_rounds = int(input("Enter number of rounds to play: "))
+    except ValueError:
+        num_rounds = 3
+
     while True:
         try:
-            # שלב 1: הגדרת כמות סיבובים (בטקסט רגיל)
-            print("\n--- New Game Setup ---")
-            try:
-                rounds_str = input("Enter number of rounds to play: ")
-                num_rounds = int(rounds_str)
-            except ValueError:
-                num_rounds = 3
-
-            # שלב 2: הפעלת ה-UI וחיפוש שרת עם אנימציית ערבוב
-            ui.start()
-            frame = 0
+            print("\nClient started, listening for offer requests...")
+            
             server_ip = None
             server_port = None
             server_name = None
+            
+            start_search_time = time.time()
+            found_server = False
 
-            # לולאת המתנה לשרת עם אנימציה
-            while True:
-                # הצגת אנימציית ערבוב באזור הדילר
-                ui.layout["dealer"].update(ui.render_shuffling(frame))
-                # עדכון סטטוס בשאר הלוח
-                from rich.panel import Panel
-                from rich.align import Align
-                from rich.text import Text
-                ui.layout["opponents"].update(Panel(Align.center(Text("Searching for a table...", style="bold yellow")), border_style="dim"))
-                ui.layout["player"].update(Panel(Align.center(Text(f"Listening for offers on port {UDP_PORT}...", style="dim")), title="Lobby"))
-                
-                ui.live.refresh()
-                frame += 1
-                
+            # =========================
+            # Discovery Phase (Automatic with Manual Fallback)
+            # =========================
+            while not found_server:
+                # בדיקה אם הגיע UDP
+                udp_sock.settimeout(UDP_OFFER_TIMEOUT)
                 try:
-                    udp_sock.settimeout(UDP_OFFER_TIMEOUT)
                     data, addr = udp_sock.recvfrom(1024)
-                    server_ip = addr[0]
+                    # כאן המקום לוודא Magic Cookie בתוך unpack_offer
                     server_port, server_name = protocol.unpack_offer(data)
-                    break # נמצא שרת!
+                    server_ip = addr[0]
+                    print(f"Received offer from {server_ip} ({server_name}), connecting...")
+                    found_server = True
                 except socket.timeout:
-                    continue # ממשיך לאנימציה הבאה
-                except Exception:
+                    # אם עבר זמן ועדיין מחפשים
+                    elapsed = time.time() - start_search_time
+                    if elapsed > 7.0: # אחרי 7 שניות נציע מעבר לידני
+                        print(f"Still searching... (To enter IP manually, type 'm' and press Enter, or just wait)")
+                        
+                        # בדיקה אם המשתמש הקיש משהו במקלדת בלי לעצור את הלופ
+                        rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if rlist:
+                            choice = sys.stdin.readline().strip().lower()
+                            if choice == 'm':
+                                server_ip = input("Enter server IP: ").strip()
+                                server_port = int(input("Enter server port: ").strip())
+                                found_server = True
+                    continue
+                except Exception as e:
                     continue
 
-            # שלב 3: התחברות וניהול המשחק
+            # =========================
+            # TCP connection & gameplay
+            # =========================
+            ui.start()
             tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 tcp_sock.connect((server_ip, server_port))
                 tcp_sock.settimeout(TCP_RESPONSE_TIMEOUT)
-                
-                req_packet = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME) + b"\n"                
-                tcp_sock.sendall(req_packet)
-                
-                # הרצת המשחק (ה-UI כבר רץ, פשוט מעבירים אותו)
+
+                # שליחת הבקשה לפי הפרוטוקול
+                request = protocol.pack_request(num_rounds, CLIENT_TEAM_NAME)
+                tcp_sock.sendall(request)
+
+                # הרצת המשחק - וודא ש-play_game מדפיס סטטיסטיקה בסוף
                 player.play_game(tcp_sock, num_rounds, ui)
 
             except Exception as e:
-                ui.stop() # עוצרים רגע כדי להדפיס שגיאה
+                ui.stop()
                 print(f"Game session error: {e}")
                 time.sleep(2)
             finally:
                 tcp_sock.close()
-                ui.stop() # סגירה סופית של ה-UI בסוף המשחק
+                ui.stop()
+                # הדרישה: חזרה מיידית להאזנה
+                print("\nGame over. Returning to discovery mode...")
 
         except KeyboardInterrupt:
-            ui.stop()
             print("\nExiting client.")
             break
 
