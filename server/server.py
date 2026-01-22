@@ -285,6 +285,7 @@ def run_table_loop(table: CasinoTable):
             time.sleep(1)
             continue
 
+        # ===== Waiting room join window =====
         countdown_start = time.time()
         while time.time() - countdown_start < ROUND_JOIN_WINDOW:
             display_dashboard(table)
@@ -296,11 +297,13 @@ def run_table_loop(table: CasinoTable):
                 table.waiting_room.clear()
             table.game_status = GAME_STATUS_IN_PROGRESS
             players_snapshot = list(table.active_players)
+
         if not players_snapshot:
             with table.lock:
                 table.game_status = GAME_STATUS_WAITING
             continue
 
+        # ===== Deal cards =====
         deck = blackjack.create_deck()
         dealer_hand = [deck.pop(), deck.pop()]
         with table.lock:
@@ -318,21 +321,29 @@ def run_table_loop(table: CasinoTable):
             except OSError:
                 remove_player(table, player)
 
+        # Dealer face-up card
         dealer_face_up = dealer_hand[0]
-        dealer_face_up_pkt = pack_payload(
-            decision=DECISION_STAND,
-            result=RESULT_NOT_OVER,
-            rank=dealer_face_up[0],
-            suit=dealer_face_up[1]
+        broadcast(
+            pack_payload(
+                decision=DECISION_STAND,
+                result=RESULT_NOT_OVER,
+                rank=dealer_face_up[0],
+                suit=dealer_face_up[1]
+            ),
+            table.active_players,
+            table
         )
-        broadcast(dealer_face_up_pkt, table.active_players, table)
 
+        # ===== Player turns =====
         for player in list(table.active_players):
             if player not in table.active_players:
                 continue
+
             try:
                 while not player.is_busted and not player.is_standing:
                     blackjack.drain_socket_buffer(player.conn)
+
+                    # Signal turn start
                     try:
                         player.conn.sendall(
                             pack_payload(
@@ -345,39 +356,61 @@ def run_table_loop(table: CasinoTable):
                     except OSError:
                         remove_player(table, player)
                         break
-                    player.conn.settimeout(TURN_TIMEOUT)
 
+                    player.conn.settimeout(TURN_TIMEOUT)
                     data = blackjack.recv_exact(player.conn, 14)
+
+                    # ===== AUTO-STAND on timeout =====
                     if not data:
-                        # PLAYER DID NOT RESPOND IN TIME
-                        remove_player(table, player)
+                        player.is_standing = True
+                        broadcast_opponent_action(table, player, 1)
+
+                        # Notify the player himself to exit CURRENT TURN
+                        try:
+                            player.conn.sendall(
+                                pack_payload(
+                                    decision=DECISION_STAND,
+                                    result=RESULT_NOT_OVER,
+                                    rank=0,
+                                    suit=0
+                                )
+                            )
+                        except OSError:
+                            remove_player(table, player)
+
+                        player.conn.settimeout(GAMEPLAY_TIMEOUT)
                         break
 
                     decision = blackjack.read_client_decision(data)
                     if decision is None:
                         continue
 
-                    # RESTORE NORMAL TIMEOUT AFTER VALID INPUT
+                    # Restore normal timeout after valid input
                     player.conn.settimeout(GAMEPLAY_TIMEOUT)
+
                     if decision == DECISION_HIT:
                         card = deck.pop()
                         player.hand.append(card)
                         try:
-                            send_update(player.conn, card)                 # SEND CARD TO PLAYER
+                            send_update(player.conn, card)
                             broadcast_opponent_action(table, player, 0)
                             broadcast_opponent_card(table, player, card)
                         except OSError:
                             remove_player(table, player)
                             break
+
                         if blackjack.hand_value(player.hand) > 21:
                             player.is_busted = True
                             break
+
                     elif decision == DECISION_STAND:
                         player.is_standing = True
                         broadcast_opponent_action(table, player, 1)
-            except (OSError, ValueError, socket.timeout):
+
+            except (OSError, ValueError):
                 remove_player(table, player)
 
+        # ===== Dealer turn =====
         with table.lock:
             active_players = list(table.active_players)
         if not active_players:
@@ -386,17 +419,19 @@ def run_table_loop(table: CasinoTable):
                 table.dealer_hand = []
             continue
 
-        dealer_hidden_card = dealer_hand[1]
+        # Reveal hidden dealer card
+        dealer_hidden = dealer_hand[1]
         broadcast(
             pack_payload(
                 decision=DECISION_STAND,
                 result=RESULT_NOT_OVER,
-                rank=dealer_hidden_card[0],
-                suit=dealer_hidden_card[1]
+                rank=dealer_hidden[0],
+                suit=dealer_hidden[1]
             ),
             table.active_players,
             table
         )
+
         while blackjack.hand_value(dealer_hand) < 17:
             card = deck.pop()
             dealer_hand.append(card)
@@ -413,8 +448,10 @@ def run_table_loop(table: CasinoTable):
                 table
             )
 
+        # ===== Results =====
         dealer_score = blackjack.hand_value(dealer_hand)
         last_dealer_card = dealer_hand[-1]
+
         for player in list(table.active_players):
             if player.is_busted:
                 result = RESULT_LOSS
@@ -431,6 +468,7 @@ def run_table_loop(table: CasinoTable):
             except OSError:
                 remove_player(table, player)
 
+        # ===== Round cleanup =====
         with table.lock:
             for player in list(table.active_players):
                 player.remaining_rounds -= 1
@@ -443,9 +481,12 @@ def run_table_loop(table: CasinoTable):
                         player.conn.close()
                     except OSError:
                         pass
+
             table.dealer_hand = []
             table.game_status = GAME_STATUS_WAITING
+
         display_dashboard(table)
+
 
 # =========================
 # Main

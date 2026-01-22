@@ -1,6 +1,8 @@
 ﻿import sys
 import socket
 import time
+import threading
+
 import common.protocol as protocol
 
 # ==========================================
@@ -8,15 +10,16 @@ import common.protocol as protocol
 # ==========================================
 
 def recv_all(conn, size):
-    """קבלת נתונים מלאה מהסוקט כדי להבטיח חבילות שלמות"""
     data = b''
     while len(data) < size:
         try:
             chunk = conn.recv(size - len(data))
-            if not chunk: 
-                return None 
+            if not chunk:
+                return None  # disconnect
             data += chunk
-        except: 
+        except socket.timeout:
+            return b''      # just "no data yet"
+        except:
             return None
     return data
 
@@ -54,11 +57,12 @@ def calculate_score(cards):
 # ==========================================
 
 def play_game(conn, total_rounds, ui):
+    import threading
+
     wins = 0
     played = 0
     PAYLOAD_SIZE = 14
 
-    # UI state (compatible with BlackjackUI)
     game_state = {
         "dealer": {"cards": [], "hidden_cards": 1},
         "players": {},
@@ -109,16 +113,13 @@ def play_game(conn, total_rounds, ui):
         return game_state["players"][pid]
 
     def sync_ui():
-        """Always recompute score right before rendering."""
         for pl in game_state["players"].values():
             pl["score"] = calculate_score(pl["cards"])
         ui.update_table(game_state)
 
     def reset_round_state():
-        """Hard reset: never carry state between rounds."""
         game_state["dealer"]["cards"] = []
         game_state["dealer"]["hidden_cards"] = 1
-
         for pl in game_state["players"].values():
             pl["cards"] = []
             pl["score"] = 0
@@ -127,9 +128,6 @@ def play_game(conn, total_rounds, ui):
 
     while played < total_rounds:
         reset_round_state()
-
-        # ===== Internal Sequence Tracker =====
-        # Count only real cards (rank != 0) received this round
         cards_received = 0
         awaiting_hit_card = False
 
@@ -140,41 +138,78 @@ def play_game(conn, total_rounds, ui):
         while not round_over:
             data = recv_all(conn, PAYLOAD_SIZE)
             if not data:
-                return  # server disconnected
+                return
 
             _, result, rank, suit = protocol.unpack_payload(data)
 
+            # ---------- OPPONENT ----------
             if result == protocol.RESULT_OPPONENT_CARD:
-                opponent_id = (suit >> 2) & 0x3F
+                pid = (suit >> 2) & 0x3F
                 low = suit & 0x03
-                opp = get_or_create_opponent(opponent_id)
+                opp = get_or_create_opponent(pid)
 
                 if rank == 0:
-                    if low == 0:
-                        game_state["event_log"].append(f"{opp['name']} HIT")
-                    elif low == 1:
-                        game_state["event_log"].append(f"{opp['name']} STAND")
-                    sync_ui()
-                    continue
-
-                card = get_card_data(rank, low)
-                opp["cards"].append(card)
-                game_state["event_log"].append(f"{opp['name']} drew {card['rank']}")
+                    game_state["event_log"].append(
+                        f"{opp['name']} {'HIT' if low == 0 else 'STAND'}"
+                    )
+                else:
+                    card = get_card_data(rank, low)
+                    opp["cards"].append(card)
+                    game_state["event_log"].append(f"{opp['name']} drew {card['rank']}")
                 sync_ui()
                 continue
 
             # ---------- YOUR TURN ----------
             if result == protocol.RESULT_YOUR_TURN:
                 p = game_state["players"][my_id]
-                try:
-                    p["is_current"] = True
-                    sync_ui()
+                p["is_current"] = True
+                ui._turn_player_key = str(my_id)
+                ui._turn_started_at = time.monotonic()
+                game_state["event_log"].append("Your turn!")
+                sync_ui()
 
-                    choice = ui.get_action_prompt()
+                choice_holder = {"choice": None}
+
+                def read_choice():
+                    try:
+                        choice_holder["choice"] = ui.get_action_prompt()
+                    except:
+                        choice_holder["choice"] = "s"
+
+                t = threading.Thread(target=read_choice, daemon=True)
+                t.start()
+
+                prev_timeout = conn.gettimeout()
+                conn.settimeout(0.2)
+
+                try:
+                    while True:
+                        if choice_holder["choice"] is not None:
+                            break
+                        try:
+                            data2 = conn.recv(PAYLOAD_SIZE)
+                        except socket.timeout:
+                            sync_ui()
+                            continue
+
+                        if not data2:
+                            return
+
+                        _, r2, rk2, st2 = protocol.unpack_payload(data2)
+
+                        # Server auto-stand / progress
+                        if r2 != protocol.RESULT_YOUR_TURN:
+                            result, rank, suit = r2, rk2, st2
+                            break
                 finally:
-                    # Never allow UI to get stuck in turn mode
+                    conn.settimeout(prev_timeout)
                     p["is_current"] = False
                     sync_ui()
+
+                if result != protocol.RESULT_YOUR_TURN:
+                    continue
+
+                choice = choice_holder["choice"]
 
                 if choice == 'h':
                     conn.sendall(protocol.pack_payload(protocol.DECISION_HIT, 0, 0, 0))
@@ -182,7 +217,6 @@ def play_game(conn, total_rounds, ui):
                     game_state["event_log"].append("You chose HIT")
                 elif choice == 'q':
                     ui.stop()
-                    print("Quitting game...")
                     return
                 else:
                     conn.sendall(protocol.pack_payload(protocol.DECISION_STAND, 0, 0, 0))
@@ -192,37 +226,23 @@ def play_game(conn, total_rounds, ui):
                 sync_ui()
                 continue
 
-            # ---------- NOT OVER (a card update) ----------
+            # ---------- CARD UPDATE ----------
             if result == protocol.RESULT_NOT_OVER:
                 if rank == 0:
-                    # "waiting" / heartbeat payload
                     sync_ui()
                     continue
 
                 card = get_card_data(rank, suit)
-
-                # Strict ownership rules:
-                # First 2 cards -> player
-                # Next 1 card -> dealer (face up) + hidden_cards stays 1
-                # After HIT -> player
-                # Otherwise -> dealer
                 if cards_received < 2:
-                    p = game_state["players"][my_id]
-                    p["cards"].append(card)
-                    game_state["event_log"].append(f"You were dealt {card['rank']}")
+                    game_state["players"][my_id]["cards"].append(card)
                 elif cards_received == 2:
                     game_state["dealer"]["cards"].append(card)
-                    game_state["dealer"]["hidden_cards"] = 1
-                    game_state["event_log"].append("Dealer dealt a face-up card")
                 else:
                     if awaiting_hit_card:
-                        p = game_state["players"][my_id]
-                        p["cards"].append(card)
-                        game_state["event_log"].append(f"You drew {card['rank']}")
+                        game_state["players"][my_id]["cards"].append(card)
                         awaiting_hit_card = False
                     else:
                         game_state["dealer"]["cards"].append(card)
-                        game_state["event_log"].append("Dealer drew a card")
 
                 cards_received += 1
                 sync_ui()
@@ -230,16 +250,11 @@ def play_game(conn, total_rounds, ui):
 
             # ---------- ROUND OVER ----------
             if result in (protocol.RESULT_WIN, protocol.RESULT_LOSS, protocol.RESULT_TIE):
-                # Dealer hole card is revealed at round end
                 game_state["dealer"]["hidden_cards"] = 0
 
                 if rank != 0:
-                    final_card = get_card_data(rank, suit)
-
-                    # Avoid duplicate: server often sends last dealer card both as update and as result payload
-                    dealer_cards = game_state["dealer"]["cards"]
-                    if not dealer_cards or dealer_cards[-1] != final_card:
-                        dealer_cards.append(final_card)
+                    card = get_card_data(rank, suit)
+                    game_state["dealer"]["cards"].append(card)
 
                 p = game_state["players"][my_id]
                 if result == protocol.RESULT_WIN:
@@ -254,15 +269,12 @@ def play_game(conn, total_rounds, ui):
 
                 played += 1
                 round_over = True
-                game_state["event_log"].append(f"Round Over: {p['status']}")
                 sync_ui()
-                time.sleep(3)
-                continue
-
-            # ---------- Anything else ----------
-            sync_ui()
+                time.sleep(2)
+                break
 
     ui.stop()
+
     if played > 0:
         win_rate = (wins / played) * 100
         print(f"\n[!] Game Finished! Played: {played}, Wins: {wins}, Win Rate: {win_rate:.1f}%")
